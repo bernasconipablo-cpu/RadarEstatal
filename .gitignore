@@ -1,0 +1,7 @@
+.next/
+node_modules/
+.env.local
+.env
+*.json.bak
+dist-scripts/
+licitaciones-exploración.json
