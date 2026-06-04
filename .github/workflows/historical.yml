@@ -1,0 +1,50 @@
+name: Carga Histórica
+
+on:
+  workflow_dispatch:
+    inputs:
+      meses:
+        description: 'Cuántos meses hacia atrás (default: 24)'
+        required: false
+        default: '24'
+
+jobs:
+  historical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Crear .env.local
+        run: |
+          echo "NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" >> .env.local
+          echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" >> .env.local
+          echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> .env.local
+
+      - name: Restaurar progreso
+        uses: actions/cache@v4
+        with:
+          path: .historical-progress.json
+          key: historical-progress-${{ github.run_id }}
+          restore-keys: |
+            historical-progress-
+
+      - name: Correr scraper histórico
+        run: npm run historical
+        env:
+          MESES: ${{ inputs.meses }}
+
+      - name: Guardar progreso
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: .historical-progress.json
+          key: historical-progress-${{ github.run_id }}
