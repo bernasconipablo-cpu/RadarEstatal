@@ -3,7 +3,6 @@ import { supabaseAdmin } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
   const params = req.nextUrl.searchParams
-
   const estado = params.get('estado')
   const organismo = params.get('organismo')
   const fecha_desde = params.get('fecha_desde')
@@ -25,19 +24,12 @@ export async function GET(req: NextRequest) {
   if (fecha_desde) query = query.gte('fecha_publicacion', fecha_desde)
   if (fecha_hasta) query = query.lte('fecha_publicacion', fecha_hasta)
   if (moneda) query = query.eq('moneda', moneda)
-
   if (busqueda) {
-    query = query.textSearch('objeto', busqueda, {
-      type: 'websearch',
-      config: 'spanish',
-    })
+    query = query.textSearch('objeto', busqueda, { type: 'websearch', config: 'spanish' })
   }
 
   const { data, error, count } = await query
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   return NextResponse.json({
     data,

@@ -7,18 +7,18 @@ export interface ArticuloLicitacion {
 }
 
 export interface Licitacion {
-  id: string // "arce-XXXXXX"
+  id: string
   numero_compra: string
-  tipo_procedimiento: string // "Compra Directa", "Licitación Pública", etc
+  tipo_procedimiento: string
   objeto: string
   organismo: string
   inciso: string
   unidad_ejecutora: string
-  fecha_publicacion: string // YYYY-MM-DD
+  fecha_publicacion: string
   fecha_apertura: string | null
   fecha_adjudicacion: string | null
   monto_estimado: number | null
-  moneda: string | null // "UYU" | "USD"
+  moneda: string | null
   estado: 'publicada' | 'adjudicada' | 'desierta' | 'suspendida' | 'otro'
   empresa_adjudicada: string | null
   monto_adjudicado: number | null

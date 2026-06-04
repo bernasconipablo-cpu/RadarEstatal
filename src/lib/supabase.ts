@@ -6,8 +6,6 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
-// Admin client for server-side operations (scraper, API routes)
 export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 
 export async function upsertLicitaciones(licitaciones: Licitacion[]): Promise<{

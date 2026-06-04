@@ -3,21 +3,19 @@ import { scrapear } from '@/lib/scraper-arce'
 import { upsertLicitaciones, registrarScrapingRun } from '@/lib/supabase'
 import { format, subDays } from 'date-fns'
 
-// Vercel cron llama este endpoint — también se puede llamar manualmente
-export const maxDuration = 300 // 5 minutos máximo en Vercel
+export const maxDuration = 300
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
 
-  // Proteger el endpoint — solo Vercel cron o llamadas con el secret
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   const hoy = new Date()
   const fechaHasta = format(hoy, 'yyyy-MM-dd')
-  const fechaDesde = format(subDays(hoy, 3), 'yyyy-MM-dd') // últimos 3 días
+  const fechaDesde = format(subDays(hoy, 3), 'yyyy-MM-dd')
 
   const resultados: Record<string, object> = {}
 

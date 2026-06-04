@@ -31,7 +31,6 @@ export default function Dashboard() {
   const [pagina, setPagina] = useState(1)
   const [totalPaginas, setTotalPaginas] = useState(1)
   const [cargando, setCargando] = useState(false)
-
   const [busqueda, setBusqueda] = useState('')
   const [estado, setEstado] = useState<EstadoLicitacion | ''>('')
   const [organismo, setOrganismo] = useState('')
@@ -44,7 +43,6 @@ export default function Dashboard() {
     if (organismo) params.set('organismo', organismo)
     params.set('pagina', String(pagina))
     params.set('por_pagina', '50')
-
     try {
       const res = await fetch(`/api/licitaciones?${params}`)
       const json = await res.json()
@@ -56,29 +54,16 @@ export default function Dashboard() {
     }
   }, [busqueda, estado, organismo, pagina])
 
-  useEffect(() => {
-    cargar()
-  }, [cargar])
-
-  function handleBusqueda(e: React.FormEvent) {
-    e.preventDefault()
-    setPagina(1)
-    cargar()
-  }
+  useEffect(() => { cargar() }, [cargar])
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Licitaciones y Compras del Estado</h1>
-        <p className="text-gray-500 text-sm mt-1">
-          {total.toLocaleString()} registros · Fuente: comprasestatales.gub.uy
-        </p>
+        <p className="text-gray-500 text-sm mt-1">{total.toLocaleString()} registros · Fuente: comprasestatales.gub.uy</p>
       </div>
-
-      {/* Filtros */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-        <form onSubmit={handleBusqueda} className="flex gap-3">
+        <form onSubmit={(e) => { e.preventDefault(); setPagina(1); cargar() }} className="flex gap-3">
           <input
             type="text"
             placeholder="Buscar por objeto, organismo..."
@@ -86,14 +71,10 @@ export default function Dashboard() {
             onChange={(e) => setBusqueda(e.target.value)}
             className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <button
-            type="submit"
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
-          >
+          <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition">
             Buscar
           </button>
         </form>
-
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-xs text-gray-500 font-medium">Estado:</span>
           {ESTADOS.map((e) => (
@@ -101,15 +82,12 @@ export default function Dashboard() {
               key={e.valor}
               onClick={() => { setEstado(e.valor as EstadoLicitacion | ''); setPagina(1) }}
               className={`px-3 py-1 rounded-full text-xs font-medium transition border ${
-                estado === e.valor
-                  ? 'border-blue-600 bg-blue-600 text-white'
-                  : 'border-gray-200 ' + e.color + ' hover:border-blue-400'
+                estado === e.valor ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-200 ' + e.color + ' hover:border-blue-400'
               }`}
             >
               {e.label}
             </button>
           ))}
-
           <input
             type="text"
             placeholder="Filtrar organismo..."
@@ -119,23 +97,17 @@ export default function Dashboard() {
           />
         </div>
       </div>
-
-      {/* Tabla */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {cargando ? (
-          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
-            Cargando...
-          </div>
+          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">Cargando...</div>
         ) : licitaciones.length === 0 ? (
-          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
-            No se encontraron licitaciones
-          </div>
+          <div className="flex items-center justify-center h-40 text-gray-400 text-sm">No se encontraron licitaciones</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600 w-8">#</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">#</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Objeto</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Organismo</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Tipo</th>
@@ -148,70 +120,33 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-100">
                 {licitaciones.map((lic, i) => (
                   <tr key={lic.id} className="hover:bg-gray-50 transition">
-                    <td className="px-4 py-3 text-gray-400 text-xs">
-                      {(pagina - 1) * 50 + i + 1}
-                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs">{(pagina - 1) * 50 + i + 1}</td>
                     <td className="px-4 py-3 max-w-xs">
-                      <a
-                        href={lic.url_compra}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-700 hover:underline line-clamp-2 font-medium"
-                      >
+                      <a href={lic.url_compra} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline line-clamp-2 font-medium">
                         {lic.objeto || lic.numero_compra}
                       </a>
-                      {lic.numero_compra && (
-                        <span className="text-xs text-gray-400 block">{lic.numero_compra}</span>
-                      )}
+                      {lic.numero_compra && <span className="text-xs text-gray-400 block">{lic.numero_compra}</span>}
                     </td>
-                    <td className="px-4 py-3 text-gray-600 text-xs max-w-[180px]">
-                      <span className="line-clamp-2">{lic.organismo}</span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
-                      {lic.tipo_procedimiento}
-                    </td>
-                    <td className="px-4 py-3">
-                      <EstadoBadge estado={lic.estado} />
-                    </td>
+                    <td className="px-4 py-3 text-gray-600 text-xs max-w-[180px]"><span className="line-clamp-2">{lic.organismo}</span></td>
+                    <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{lic.tipo_procedimiento}</td>
+                    <td className="px-4 py-3"><EstadoBadge estado={lic.estado} /></td>
                     <td className="px-4 py-3 text-right font-mono text-xs whitespace-nowrap">
-                      {lic.estado === 'adjudicada'
-                        ? formatMonto(lic.monto_adjudicado, lic.moneda)
-                        : formatMonto(lic.monto_estimado, lic.moneda)}
+                      {lic.estado === 'adjudicada' ? formatMonto(lic.monto_adjudicado, lic.moneda) : formatMonto(lic.monto_estimado, lic.moneda)}
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
-                      {lic.fecha_publicacion}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 text-xs max-w-[160px]">
-                      <span className="line-clamp-1">{lic.empresa_adjudicada || '—'}</span>
-                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{lic.fecha_publicacion}</td>
+                    <td className="px-4 py-3 text-gray-600 text-xs max-w-[160px]"><span className="line-clamp-1">{lic.empresa_adjudicada || '—'}</span></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-
-        {/* Paginación */}
         {totalPaginas > 1 && (
           <div className="border-t border-gray-200 px-4 py-3 flex items-center justify-between bg-gray-50">
-            <span className="text-xs text-gray-500">
-              Pág {pagina} de {totalPaginas} · {total.toLocaleString()} resultados
-            </span>
+            <span className="text-xs text-gray-500">Pág {pagina} de {totalPaginas} · {total.toLocaleString()} resultados</span>
             <div className="flex gap-2">
-              <button
-                onClick={() => setPagina((p) => Math.max(1, p - 1))}
-                disabled={pagina === 1}
-                className="px-3 py-1 text-xs rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 transition"
-              >
-                ← Anterior
-              </button>
-              <button
-                onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
-                disabled={pagina === totalPaginas}
-                className="px-3 py-1 text-xs rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 transition"
-              >
-                Siguiente →
-              </button>
+              <button onClick={() => setPagina((p) => Math.max(1, p - 1))} disabled={pagina === 1} className="px-3 py-1 text-xs rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 transition">← Anterior</button>
+              <button onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))} disabled={pagina === totalPaginas} className="px-3 py-1 text-xs rounded border border-gray-300 disabled:opacity-40 hover:bg-gray-100 transition">Siguiente →</button>
             </div>
           </div>
         )}
