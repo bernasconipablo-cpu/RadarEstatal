@@ -109,7 +109,10 @@ function saveProgress(p: Progress) {
 async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
   for (let i = 0; i < intentos; i++) {
     try {
-      const { data } = await http.get(url)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 40000)
+      const { data } = await http.get(url, { signal: controller.signal as any })
+      clearTimeout(timer)
       return data
     } catch (err: any) {
       if (i < intentos - 1) {
@@ -232,7 +235,13 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
-    const html = await fetchConReintentos(url)
+    let html: string
+    try {
+      html = await fetchConReintentos(url)
+    } catch (err: any) {
+      process.stdout.write(`\n    ⚠ página ${pagina} falló (${err.message?.slice(0, 50)}), saltando`)
+      break
+    }
     const $ = cheerio.load(html)
     const items = $('.row.item')
     if (items.length === 0) break
