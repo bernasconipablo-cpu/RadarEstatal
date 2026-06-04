@@ -19,88 +19,124 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function parseFecha(texto: string | undefined): string | null {
+function parseFecha(texto: string | undefined | null): string | null {
   if (!texto) return null
   const match = texto.match(/(\d{2})\/(\d{2})\/(\d{4})/)
   if (!match) return null
   return `${match[3]}-${match[2]}-${match[1]}`
 }
 
-function parseMonto(texto: string | undefined): { monto: number | null; moneda: string | null } {
+function parseMonto(texto: string | undefined | null): { monto: number | null; moneda: string | null } {
   if (!texto) return { monto: null, moneda: null }
-  const moneda = texto.includes('USD') ? 'USD' : texto.includes('UYU') || texto.includes('$') ? 'UYU' : null
-  const match = texto.replace(/\./g, '').replace(',', '.').match(/[\d]+(?:\.\d+)?/)
+  const moneda = texto.includes('USD') || texto.includes('U$S') ? 'USD'
+    : texto.includes('UYU') || texto.includes('$') ? 'UYU'
+    : null
+  const limpio = texto.replace(/\./g, '').replace(',', '.').replace(/[^0-9.]/g, '')
+  const match = limpio.match(/\d+(?:\.\d+)?/)
   return { monto: match ? parseFloat(match[0]) : null, moneda }
 }
 
-function mapEstado(tipo: string): Licitacion['estado'] {
-  const t = tipo.toLowerCase()
+function mapEstado(texto: string): Licitacion['estado'] {
+  const t = texto.toLowerCase()
   if (t.includes('adj')) return 'adjudicada'
   if (t.includes('des') || t.includes('desierta')) return 'desierta'
   if (t.includes('sus') || t.includes('suspendida')) return 'suspendida'
-  if (t.includes('vig') || t.includes('publicada') || t.includes('vigente')) return 'publicada'
+  if (t.includes('vig') || t.includes('publicada') || t.includes('vigente') || t.includes('abierta')) return 'publicada'
   return 'otro'
 }
 
 async function scrapearDetalle(idArce: string): Promise<Partial<Licitacion>> {
-  const url = `/consultas/detalle/id/${idArce}`
-  const { data: html } = await http.get(url)
+  const { data: html } = await http.get(`/consultas/detalle/id/${idArce}`)
   const $ = cheerio.load(html)
   const resultado: Partial<Licitacion> = {}
 
-  const objeto = $('.buy-object').first().text().trim()
-  if (objeto) resultado.objeto = objeto
+  // Tipo procedimiento + número desde h2
+  const h2Text = $('h2').first().clone().find('span').remove().end().text().trim()
+  const matchTipo = h2Text.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
+  if (matchTipo) {
+    resultado.tipo_procedimiento = matchTipo[1].trim()
+    resultado.numero_compra = matchTipo[2].trim()
+  } else {
+    resultado.tipo_procedimiento = h2Text
+  }
 
-  $('.buy-detail-list .row').each((_, el) => {
-    const label = $(el).find('.col-md-4, .col-sm-4').first().text().trim().toLowerCase()
-    const valor = $(el).find('.col-md-8, .col-sm-8').first().text().trim()
-    if (label.includes('apertura')) resultado.fecha_apertura = parseFecha(valor)
-    if (label.includes('adjudicación') || label.includes('adjudicacion'))
+  // Organismo desde span.small dentro del h2
+  resultado.organismo = $('h2 span.small').first().text().trim()
+
+  // Objeto
+  resultado.objeto = $('p.buy-object').first().text().trim()
+
+  // Detalles: pares label/valor en ul.buy-detail-list
+  $('ul.buy-detail-list').each((_, ul) => {
+    const items = $(ul).find('li')
+    const label = $(items[0]).text().trim().toLowerCase().replace(':', '')
+    const valor = $(items[1]).find('strong').text().trim() || $(items[1]).text().trim()
+
+    if (label.includes('fecha publicaci')) {
+      resultado.fecha_publicacion = parseFecha(valor) ?? undefined
+    }
+    if (label.includes('fecha de compra')) {
       resultado.fecha_adjudicacion = parseFecha(valor)
+    }
+    if (label.includes('apertura')) {
+      resultado.fecha_apertura = parseFecha(valor)
+    }
+    if (label.includes('monto total') || label.includes('monto adjudicado')) {
+      const { monto, moneda } = parseMonto(valor)
+      resultado.monto_adjudicado = monto
+      if (moneda) resultado.moneda = moneda
+    }
     if (label.includes('monto estimado')) {
       const { monto, moneda } = parseMonto(valor)
       resultado.monto_estimado = monto
-      if (moneda) resultado.moneda = moneda
-    }
-    if (label.includes('monto adjudicado')) {
-      const { monto, moneda } = parseMonto(valor)
-      resultado.monto_adjudicado = monto
       if (!resultado.moneda && moneda) resultado.moneda = moneda
     }
   })
 
-  const tablaProveedores = $('table').filter((_, el) => {
-    return $(el).text().toLowerCase().includes('proveedor')
-  }).first()
-  tablaProveedores.find('tr').each((i, row) => {
-    if (i === 0) return
-    const celdas = $(row).find('td')
-    const nombre = $(celdas[0]).text().trim()
-    const estado = $(celdas).last().text().trim().toLowerCase()
-    if (nombre && (estado.includes('adj') || estado.includes('ganador'))) {
-      resultado.empresa_adjudicada = nombre
-    }
+  // Empresa adjudicada: tabla con header "Nombre Proveedor" — columna 3
+  const tablaProveedores = $('table').filter((_, el) =>
+    $(el).find('th').toArray().some(th => $(th).text().toLowerCase().includes('nombre proveedor'))
+  ).first()
+  tablaProveedores.find('tbody tr').each((_, row) => {
+    const nombre = $(row).find('td').eq(2).text().trim()
+    if (nombre) resultado.empresa_adjudicada = nombre
   })
 
+  // Artículos: div.desc-item por cada ítem
   const articulos: ArticuloLicitacion[] = []
-  $('.desc-item, .items-table tr').each((i, el) => {
-    if (i === 0) return
-    const celdas = $(el).find('td')
-    if (celdas.length < 2) return
-    const numero = $(celdas[0]).text().trim()
-    const descripcion = $(celdas[1]).text().trim()
-    if (!descripcion) return
-    const cantidadText = $(celdas[2]).text().trim()
-    const unidad = $(celdas[3])?.text().trim() || null
-    const montoText = $(celdas[4])?.text().trim()
-    const { monto } = parseMonto(montoText)
-    articulos.push({
-      numero,
-      descripcion,
-      cantidad: cantidadText ? parseFloat(cantidadText.replace(',', '.')) : null,
-      unidad: unidad || null,
-      monto,
+  $('.desc-item').each((_, el) => {
+    const $el = $(el)
+    const h3Text = $el.find('h3').first().text()
+    const matchNum = h3Text.match(/Ítem\s*Nº\s*(\d+)/i)
+    const numero = matchNum ? matchNum[1] : ''
+    const descripcion = h3Text
+      .replace(/Ítem\s*Nº\s*\d+/i, '')
+      .replace(/\(Cód\.\s*Artículo\s*\d+\)/i, '')
+      .trim()
+
+    let cantidad: number | null = null
+    let unidad: string | null = null
+    let monto: number | null = null
+
+    const liItems = $el.find('ul.list-inline li')
+    liItems.each((i, li) => {
+      const txt = $(li).text().trim()
+      if (txt === 'Cantidad:') {
+        const next = $(liItems[i + 1]).find('strong').text().trim()
+        const matchCant = next.match(/([\d,.]+)\s*(.+)?/)
+        if (matchCant) {
+          cantidad = parseFloat(matchCant[1].replace(',', '.'))
+          unidad = matchCant[2]?.trim() || null
+        }
+      }
+      if (txt === 'Monto total con impuestos:') {
+        monto = parseMonto($(liItems[i + 1]).find('strong').text().trim()).monto
+      }
     })
+
+    if (descripcion) {
+      articulos.push({ numero, descripcion, cantidad, unidad, monto })
+    }
   })
   resultado.articulos = articulos
   return resultado
@@ -116,42 +152,53 @@ async function scrapearPagina(
   const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
   const { data: html } = await http.get(url)
   const $ = cheerio.load(html)
-  const items = $('#container .row.item')
+  const items = $('.row.item')
   if (items.length === 0) return { licitaciones: [], hayMas: false }
 
   const licitaciones: Licitacion[] = []
   for (const el of items.toArray()) {
     const $el = $(el)
-    const linkEl = $el.find('a[href*="/consultas/detalle/id/"]').first()
-    const href = linkEl.attr('href') || ''
+    const link = $el.find('a[href*="/consultas/detalle/id/"]').first()
+    const href = link.attr('href') || ''
     const matchId = href.match(/\/id\/(\d+)/)
     if (!matchId) continue
     const idArce = matchId[1]
-    const id = `arce-${idArce}`
-    const numeroCompra = $el.find('.numero-compra, .buy-number').first().text().trim()
-    const tipoProcedimiento = $el.find('.tipo-compra, .buy-type').first().text().trim()
-    const objeto = $el.find('.objeto-compra, .buy-name, h3').first().text().trim()
-    const organismo = $el.find('.organismo, .organism').first().text().trim()
-    const inciso = $el.find('.inciso').first().text().trim()
-    const unidadEjecutora = $el.find('.unidad-ejecutora, .unit').first().text().trim()
-    const fechaPub = parseFecha($el.find('.fecha-publicacion, .pub-date').first().text().trim())
+
+    // Tipo + número desde h3 > a (sin el span.sr-only)
+    const tituloTexto = link.clone().find('.sr-only').remove().end().text().trim()
+    const matchTipo = tituloTexto.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
+    const tipoProcedimiento = matchTipo ? matchTipo[1].trim() : tituloTexto
+    const numeroCompra = matchTipo ? matchTipo[2].trim() : ''
+
+    const organismo = $el.find('.ue-sniped span.text-muted').first().text().trim()
+    const objeto = $el.find('p.buy-object').first().text().trim()
+    const estadoTexto = $el.find('.desc-sniped').first().find('.col-md-3.text-right').text().trim()
+    const publicadoTexto = $el.find('span.text-muted').last().text().replace('Publicado:', '').trim()
+    const fechaPublicacion = parseFecha(publicadoTexto) || fechaDesde
+    const fechaCompraTexto = $el.find('.desc-sniped p').filter((_, p) =>
+      $(p).text().toLowerCase().includes('fecha de compra')
+    ).find('strong').text().trim()
+    const montoTexto = $el.find('.desc-sniped p').filter((_, p) =>
+      $(p).text().toLowerCase().includes('monto')
+    ).find('strong').text().trim()
+    const { monto: montoAdj, moneda } = parseMonto(montoTexto)
 
     const licitacion: Licitacion = {
-      id,
+      id: `arce-${idArce}`,
       numero_compra: numeroCompra,
       tipo_procedimiento: tipoProcedimiento,
       objeto,
       organismo,
-      inciso,
-      unidad_ejecutora: unidadEjecutora,
-      fecha_publicacion: fechaPub || fechaDesde,
+      inciso: '',
+      unidad_ejecutora: '',
+      fecha_publicacion: fechaPublicacion,
       fecha_apertura: null,
-      fecha_adjudicacion: null,
+      fecha_adjudicacion: parseFecha(fechaCompraTexto),
       monto_estimado: null,
-      moneda: null,
-      estado: mapEstado(tipo),
+      moneda,
+      estado: mapEstado(estadoTexto || tipo),
       empresa_adjudicada: null,
-      monto_adjudicado: null,
+      monto_adjudicado: montoAdj,
       url_compra: `${BASE_URL}/consultas/detalle/id/${idArce}`,
       articulos: [],
     }
@@ -161,11 +208,10 @@ async function scrapearPagina(
       const detalle = await scrapearDetalle(idArce)
       Object.assign(licitacion, detalle)
     } catch (err) {
-      console.warn(`No se pudo obtener detalle de ${id}:`, err)
+      console.warn(`No se pudo obtener detalle de arce-${idArce}:`, err)
     }
     licitaciones.push(licitacion)
   }
-
   return { licitaciones, hayMas: items.length >= 10 }
 }
 
