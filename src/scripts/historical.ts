@@ -231,8 +231,9 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   let totalGuardadas = 0
   let pagina = 1
   const idsVistos = new Set<string>()
+  const MAX_PAGINAS = 100
 
-  while (true) {
+  while (pagina <= MAX_PAGINAS) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
 
@@ -258,7 +259,6 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
     const items = $('.row.item')
     if (items.length === 0) break
 
-    // Detectar si el portal repite la última página (loop infinito)
     const idsEstaPagina: string[] = []
     items.toArray().forEach(el => {
       const href = $(el).find('a[href*="/consultas/detalle/id/"]').first().attr('href') || ''
