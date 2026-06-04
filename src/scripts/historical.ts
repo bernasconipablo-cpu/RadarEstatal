@@ -1,10 +1,11 @@
 /**
- * Script de carga histórica — últimos 12 meses
+ * Script de carga histórica — últimos 24 meses
  * Corre localmente: npm run historical
  * Es resumible: guarda progreso en .historical-progress.json
  */
 
 import axios from 'axios'
+import * as https from 'https'
 import * as cheerio from 'cheerio'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -16,16 +17,25 @@ require('dotenv').config({ path: path.join(__dirname, '../../.env.local') })
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const BASE_URL = 'https://www.comprasestatales.gub.uy'
-const PAUSA_MS = 900
+const PAUSA_MS = 1200
 const PROGRESS_FILE = path.join(__dirname, '../../.historical-progress.json')
 
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+// httpsAgent con rejectUnauthorized: false para evitar errores SSL en Windows
+const httpsAgent = new https.Agent({ rejectUnauthorized: false })
+
 const http = axios.create({
   baseURL: BASE_URL,
-  timeout: 30000,
+  timeout: 45000,
+  httpsAgent,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (compatible; RadarEstatal/1.0)',
-    'Accept-Language': 'es-UY,es;q=0.9',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'es-UY,es;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
   },
 })
 
@@ -96,8 +106,26 @@ function saveProgress(p: Progress) {
   fs.writeFileSync(PROGRESS_FILE, JSON.stringify(p, null, 2))
 }
 
+async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
+  for (let i = 0; i < intentos; i++) {
+    try {
+      const { data } = await http.get(url)
+      return data
+    } catch (err: any) {
+      if (i < intentos - 1) {
+        const espera = 2000 * Math.pow(2, i)
+        process.stdout.write(` [reintento ${i + 1} en ${espera / 1000}s]`)
+        await sleep(espera)
+      } else {
+        throw err
+      }
+    }
+  }
+  throw new Error('Sin respuesta')
+}
+
 async function scrapearArticulosPagina(idArce: string, pagina: number): Promise<Articulo[]> {
-  const { data: html } = await http.get(`/consultas/detalle/id/${idArce}/pagina/${pagina}`)
+  const html = await fetchConReintentos(`/consultas/detalle/id/${idArce}/pagina/${pagina}`)
   const $ = cheerio.load(html)
   const articulos: Articulo[] = []
 
@@ -139,7 +167,7 @@ async function scrapearArticulosPagina(idArce: string, pagina: number): Promise<
 }
 
 async function scrapearDetalle(idArce: string): Promise<{ lic: Partial<Licitacion>; articulos: Articulo[] }> {
-  const { data: html } = await http.get(`/consultas/detalle/id/${idArce}`)
+  const html = await fetchConReintentos(`/consultas/detalle/id/${idArce}`)
   const $ = cheerio.load(html)
   const lic: Partial<Licitacion> = {}
 
@@ -204,7 +232,7 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
-    const { data: html } = await http.get(url)
+    const html = await fetchConReintentos(url)
     const $ = cheerio.load(html)
     const items = $('.row.item')
     if (items.length === 0) break
@@ -248,21 +276,26 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         url_compra: `${BASE_URL}/consultas/detalle/id/${idArce}`,
       }
 
+      // Intentar obtener detalle; si falla, guardar datos básicos igual
+      let licFinal = licBase
+      let articulos: Articulo[] = []
       try {
         await sleep(PAUSA_MS)
-        const { lic: detalle, articulos } = await scrapearDetalle(idArce)
-        const licFinal = { ...licBase, ...detalle }
-        const { error } = await db.from('licitaciones').upsert(licFinal, { onConflict: 'id' })
-        if (error) { console.error(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
-        if (articulos.length > 0) {
-          await db.from('licitacion_articulos').delete().eq('licitacion_id', licitacionId)
-          await db.from('licitacion_articulos').insert(articulos)
-        }
-        totalGuardadas++
-        process.stdout.write(`\n    ✓ ${licitacionId} | ${(licFinal.objeto || '').slice(0, 45)} | ${articulos.length} items`)
+        const { lic: detalle, articulos: arts } = await scrapearDetalle(idArce)
+        licFinal = { ...licBase, ...detalle }
+        articulos = arts
       } catch (err: any) {
-        console.error(`\n    ✗ detalle ${licitacionId}: ${err.message}`)
+        process.stdout.write(`\n    ⚠ detalle fallido ${licitacionId} (guardando datos básicos): ${err.message?.slice(0, 60)}`)
       }
+
+      const { error } = await db.from('licitaciones').upsert(licFinal, { onConflict: 'id' })
+      if (error) { console.error(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
+      if (articulos.length > 0) {
+        await db.from('licitacion_articulos').delete().eq('licitacion_id', licitacionId)
+        await db.from('licitacion_articulos').insert(articulos)
+      }
+      totalGuardadas++
+      process.stdout.write(`\n    ✓ ${licitacionId} | ${(licFinal.objeto || '').slice(0, 45)} | ${articulos.length} items`)
     }
 
     if (items.length < 10) break
@@ -277,7 +310,7 @@ async function main() {
   const progress = loadProgress()
 
   const meses: Array<{ desde: string; hasta: string }> = []
-  for (let i = 11; i >= 0; i--) {
+  for (let i = 23; i >= 0; i--) {
     const mes = subMonths(new Date(), i)
     meses.push({
       desde: format(startOfMonth(mes), 'yyyy-MM-dd'),
@@ -286,10 +319,10 @@ async function main() {
   }
 
   console.log('\n╔══════════════════════════════════════════════════╗')
-  console.log('║      Radar Estatal — Carga Histórica 12 meses    ║')
+  console.log('║      Radar Estatal — Carga Histórica 24 meses    ║')
   console.log('╚══════════════════════════════════════════════════╝')
   console.log(`Progreso: ${PROGRESS_FILE}`)
-  console.log(`Bloques: ${meses.length * 2} (12 meses × VIG + ADJ)\n`)
+  console.log(`Bloques: ${meses.length * 2} (24 meses × VIG + ADJ)\n`)
 
   let totalGeneral = 0
 
