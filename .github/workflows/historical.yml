@@ -19,9 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
-      - run: npm ci
+      - run: npm install
 
       - name: Crear .env.local
         run: |
@@ -39,8 +38,6 @@ jobs:
 
       - name: Correr scraper histórico
         run: npm run historical
-        env:
-          MESES: ${{ inputs.meses }}
 
       - name: Guardar progreso
         if: always()
