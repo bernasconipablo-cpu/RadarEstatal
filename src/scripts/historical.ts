@@ -230,22 +230,46 @@ async function scrapearDetalle(idArce: string): Promise<{ lic: Partial<Licitacio
 async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: string): Promise<number> {
   let totalGuardadas = 0
   let pagina = 1
+  const idsVistos = new Set<string>()
 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
 
-    let html: string
-    try {
-      html = await fetchConReintentos(url)
-    } catch (err: any) {
-      process.stdout.write(`\n    ⚠ página ${pagina} falló (${err.message?.slice(0, 50)}), saltando`)
+    let html = ''
+    let paginaOk = false
+    for (let intento = 0; intento < 5; intento++) {
+      try {
+        html = await fetchConReintentos(url)
+        paginaOk = true
+        break
+      } catch (err: any) {
+        const espera = 10000 * Math.pow(2, intento)
+        process.stdout.write(`\n    ⚠ página ${pagina} intento ${intento + 1}/5 falló, esperando ${espera/1000}s...`)
+        await sleep(espera)
+      }
+    }
+    if (!paginaOk) {
+      process.stdout.write(`\n    ✗ página ${pagina} falló 5 veces, pasando al siguiente mes`)
       break
     }
 
     const $ = cheerio.load(html)
     const items = $('.row.item')
     if (items.length === 0) break
+
+    // Detectar si el portal repite la última página (loop infinito)
+    const idsEstaPagina: string[] = []
+    items.toArray().forEach(el => {
+      const href = $(el).find('a[href*="/consultas/detalle/id/"]').first().attr('href') || ''
+      const m = href.match(/\/id\/([i\d]\d*)/)
+      if (m) idsEstaPagina.push(m[1])
+    })
+    if (idsEstaPagina.length > 0 && idsEstaPagina.every(id => idsVistos.has(id))) {
+      process.stdout.write(`\n    ⏹ página ${pagina} repite IDs anteriores — fin del mes`)
+      break
+    }
+    idsEstaPagina.forEach(id => idsVistos.add(id))
 
     for (const el of items.toArray()) {
       const $el = $(el)
