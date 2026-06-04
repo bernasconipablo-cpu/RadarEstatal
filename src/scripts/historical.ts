@@ -1,5 +1,5 @@
 /**
- * Script de carga histórica — últimos 12 meses
+ * Script de carga histórica — últimos 24 meses
  * Corre localmente: npm run historical
  * Es resumible: guarda progreso en .historical-progress.json
  */
@@ -17,12 +17,11 @@ require('dotenv').config({ path: path.join(__dirname, '../../.env.local') })
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const BASE_URL = 'https://www.comprasestatales.gub.uy'
-const PAUSA_MS = 1200
+const PAUSA_MS = 800
 const PROGRESS_FILE = path.join(__dirname, '../../.historical-progress.json')
 
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-// httpsAgent con rejectUnauthorized: false para evitar errores SSL en Windows
 const httpsAgent = new https.Agent({ rejectUnauthorized: false })
 
 const http = axios.create({
@@ -228,16 +227,26 @@ async function scrapearDetalle(idArce: string): Promise<{ lic: Partial<Licitacio
   return { lic, articulos: todosArticulos }
 }
 
-async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: string): Promise<number> {
+async function scrapearMes(
+  fechaDesde: string,
+  fechaHasta: string,
+  idsEnDB: Set<string>
+): Promise<number> {
   let totalGuardadas = 0
   let pagina = 1
   const idsVistos = new Set<string>()
 
-  const MAX_PAGINAS = 100
+  // Portal shows 10 per page; 2000 pages = 20k records max per block
+  const MAX_PAGINAS = 2000
+
+  // Page 1 uses /buscar/, subsequent pages use /index/.../page/N
+  const FILTER = `tipo-pub/ALL/tipo-fecha/ROF/rango-fecha/${fechaDesde}_${fechaHasta}/filtro-cat/CAT`
 
   while (pagina <= MAX_PAGINAS) {
-    const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
-    const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
+    const url = pagina === 1
+      ? `/consultas/buscar/${FILTER}/pagina/1`
+      : `/consultas/index/${FILTER}/pagina/1/page/${pagina}`
+
     let html = ''
     let paginaOk = false
     for (let intento = 0; intento < 5; intento++) {
@@ -247,42 +256,54 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         break
       } catch (err: any) {
         const espera = 10000 * Math.pow(2, intento)
-        process.stdout.write(`\n    ⚠ página ${pagina} intento ${intento + 1}/5 falló, esperando ${espera/1000}s...`)
+        process.stdout.write(`\n    ⚠ pág ${pagina} intento ${intento + 1}/5 falló, esperando ${espera / 1000}s...`)
         await sleep(espera)
       }
     }
     if (!paginaOk) {
-      process.stdout.write(`\n    ✗ página ${pagina} falló 5 veces, pasando al siguiente mes`)
+      process.stdout.write(`\n    ✗ pág ${pagina} falló 5 veces, abortando bloque`)
       break
     }
+
     const $ = cheerio.load(html)
     const items = $('.row.item')
+
+    // End of results
     if (items.length === 0) break
 
-    // Detectar si el portal repite la última página (loop infinito)
+    // Detect portal repeating last page (safety net for infinite loop)
     const idsEstaPagina: string[] = []
     items.toArray().forEach(el => {
-      const href = $(el).find('a[href*="/consultas/detalle/id/"]').first().attr('href') || ''
-      const m = href.match(/\/id\/([i\d]\d*)/)
+      const href = $(el).find('a[href*="/id/"]').first().attr('href') || ''
+      const m = href.match(/\/id\/([\w\d]+)/)
       if (m) idsEstaPagina.push(m[1])
     })
     if (idsEstaPagina.length > 0 && idsEstaPagina.every(id => idsVistos.has(id))) {
-      process.stdout.write(`\n    ⏹ página ${pagina} repite IDs anteriores — fin del mes`)
+      process.stdout.write(`\n    ⏹ pág ${pagina} repite IDs — fin del bloque`)
       break
     }
     idsEstaPagina.forEach(id => idsVistos.add(id))
 
+    // If no "Siguiente >" link in pagination, this is the last page
+    const hasNextPage = $('#pagination a').toArray().some(a => $(a).text().trim().includes('Siguiente'))
+    const isLastPage = !hasNextPage
+
+    // Count existing vs new on this page
+    const nuevosEnPagina = idsEstaPagina.filter(id => !idsEnDB.has(`arce-${id}`)).length
+    const totalEnPagina = idsEstaPagina.length
+    process.stdout.write(`\n  pág ${pagina} [${totalEnPagina - nuevosEnPagina} exist / ${nuevosEnPagina} nuevas]`)
+
     for (const el of items.toArray()) {
       const $el = $(el)
-      const link = $el.find('a[href*="/consultas/detalle/id/"]').first()
+      const link = $el.find('a[href*="/id/"]').first()
       const href = link.attr('href') || ''
-      const matchId = href.match(/\/id\/([i\d]\d*)/)
+      const matchId = href.match(/\/id\/([\w\d]+)/)
       if (!matchId) continue
       const idArce = matchId[1]
       const licitacionId = `arce-${idArce}`
 
-      const { data: existe } = await db.from('licitaciones').select('id').eq('id', licitacionId).maybeSingle()
-      if (existe) { process.stdout.write('.'); continue }
+      // Skip records already in DB (fast Set lookup, no DB query)
+      if (idsEnDB.has(licitacionId)) { process.stdout.write('.'); continue }
 
       const tituloTexto = link.clone().find('.sr-only').remove().end().text().trim()
       const mTipo = tituloTexto.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
@@ -305,13 +326,12 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         fecha_adjudicacion: parseFecha(fechaCompraTexto),
         monto_estimado: null,
         moneda,
-        estado: mapEstado(estadoTexto || tipo, tipo),
+        estado: mapEstado(estadoTexto, estadoTexto),
         empresa_adjudicada: null,
         monto_adjudicado: montoAdj,
         url_compra: `${BASE_URL}/consultas/detalle/id/${idArce}`,
       }
 
-      // Intentar obtener detalle; si falla, guardar datos básicos igual
       let licFinal = licBase
       let articulos: Articulo[] = []
       try {
@@ -320,20 +340,27 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         licFinal = { ...licBase, ...detalle }
         articulos = arts
       } catch (err: any) {
-        process.stdout.write(`\n    ⚠ detalle fallido ${licitacionId} (guardando datos básicos): ${err.message?.slice(0, 60)}`)
+        process.stdout.write(`\n    ⚠ detalle fallido ${licitacionId}: ${err.message?.slice(0, 60)}`)
       }
 
       const { error } = await db.from('licitaciones').upsert(licFinal, { onConflict: 'id' })
-      if (error) { console.error(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
+      if (error) { process.stdout.write(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
+
       if (articulos.length > 0) {
         await db.from('licitacion_articulos').delete().eq('licitacion_id', licitacionId)
         await db.from('licitacion_articulos').insert(articulos)
       }
+
+      // Add to in-memory Set so subsequent pages don't re-fetch this record
+      idsEnDB.add(licitacionId)
       totalGuardadas++
       process.stdout.write(`\n    ✓ ${licitacionId} | ${(licFinal.objeto || '').slice(0, 45)} | ${articulos.length} items`)
     }
 
-    if (items.length < 10) break
+    if (isLastPage) {
+      process.stdout.write(`\n    ⏹ pág ${pagina} es la última (sin Siguiente)`)
+      break
+    }
     pagina++
     await sleep(PAUSA_MS)
   }
@@ -343,6 +370,21 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
 
 async function main() {
   const progress = loadProgress()
+
+  // Load ALL existing IDs once — avoids one DB query per record
+  process.stdout.write('Cargando IDs existentes de Supabase...')
+  let idsEnDB = new Set<string>()
+  let offset = 0
+  const PAGE_SIZE = 1000
+  while (true) {
+    const { data, error } = await db.from('licitaciones').select('id').range(offset, offset + PAGE_SIZE - 1)
+    if (error) { console.error('Error cargando IDs:', error.message); process.exit(1) }
+    if (!data || data.length === 0) break
+    data.forEach((r: any) => idsEnDB.add(r.id))
+    if (data.length < PAGE_SIZE) break
+    offset += PAGE_SIZE
+  }
+  process.stdout.write(` ${idsEnDB.size} registros ya en DB\n`)
 
   const meses: Array<{ desde: string; hasta: string }> = []
   for (let i = 23; i >= 0; i--) {
@@ -357,31 +399,30 @@ async function main() {
   console.log('║      Radar Estatal — Carga Histórica 24 meses    ║')
   console.log('╚══════════════════════════════════════════════════╝')
   console.log(`Progreso: ${PROGRESS_FILE}`)
-  console.log(`Bloques: ${meses.length * 2} (24 meses × VIG + ADJ)\n`)
+  console.log(`Bloques: ${meses.length} (1 por mes, todos los tipos)\n`)
 
   let totalGeneral = 0
 
   for (const { desde, hasta } of meses) {
-    for (const tipo of ['VIG', 'ADJ'] as const) {
-      const clave = `${tipo}-${desde.slice(0, 7)}`
-      if (progress.completados.includes(clave)) {
-        console.log(`  ⏭  ${clave} — ya procesado`)
-        continue
-      }
-      console.log(`\n▶ ${clave} (${desde} → ${hasta})`)
-      const inicio = Date.now()
-      try {
-        const guardadas = await scrapearMes(tipo, desde, hasta)
-        console.log(`\n  ✅ ${guardadas} nuevas en ${Math.round((Date.now()-inicio)/1000)}s`)
-        totalGeneral += guardadas
-        progress.completados.push(clave)
-        saveProgress(progress)
-      } catch (err: any) {
-        console.error(`\n  ❌ Error: ${err.message}`)
-        progress.ultimo_error = `${clave}: ${err.message}`
-        saveProgress(progress)
-        await sleep(10000)
-      }
+    const clave = desde.slice(0, 7)
+    if (progress.completados.includes(clave)) {
+      console.log(`  ⏭  ${clave} — ya procesado`)
+      continue
+    }
+    console.log(`\n▶ ${clave} (${desde} → ${hasta})`)
+    const inicio = Date.now()
+    try {
+      const guardadas = await scrapearMes(desde, hasta, idsEnDB)
+      const seg = Math.round((Date.now() - inicio) / 1000)
+      console.log(`\n  ✅ ${guardadas} nuevas en ${seg}s (total DB: ${idsEnDB.size})`)
+      totalGeneral += guardadas
+      progress.completados.push(clave)
+      saveProgress(progress)
+    } catch (err: any) {
+      console.error(`\n  ❌ Error: ${err.message}`)
+      progress.ultimo_error = `${clave}: ${err.message}`
+      saveProgress(progress)
+      await sleep(10000)
     }
   }
 
