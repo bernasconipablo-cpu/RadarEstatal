@@ -22,12 +22,11 @@ const PROGRESS_FILE = path.join(__dirname, '../../.historical-progress.json')
 
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-// httpsAgent con rejectUnauthorized: false para evitar errores SSL en Windows
 const httpsAgent = new https.Agent({ rejectUnauthorized: false })
 
 const http = axios.create({
   baseURL: BASE_URL,
-  timeout: 45000,
+  timeout: 40000,
   httpsAgent,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -109,7 +108,10 @@ function saveProgress(p: Progress) {
 async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
   for (let i = 0; i < intentos; i++) {
     try {
-      const { data } = await http.get(url)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 40000)
+      const { data } = await http.get(url, { signal: controller.signal as any })
+      clearTimeout(timer)
       return data
     } catch (err: any) {
       if (i < intentos - 1) {
@@ -232,7 +234,15 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
-    const html = await fetchConReintentos(url)
+
+    let html: string
+    try {
+      html = await fetchConReintentos(url)
+    } catch (err: any) {
+      process.stdout.write(`\n    ⚠ página ${pagina} falló (${err.message?.slice(0, 50)}), saltando`)
+      break
+    }
+
     const $ = cheerio.load(html)
     const items = $('.row.item')
     if (items.length === 0) break
@@ -276,7 +286,6 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         url_compra: `${BASE_URL}/consultas/detalle/id/${idArce}`,
       }
 
-      // Intentar obtener detalle; si falla, guardar datos básicos igual
       let licFinal = licBase
       let articulos: Articulo[] = []
       try {
