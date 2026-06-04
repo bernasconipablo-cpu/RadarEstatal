@@ -233,7 +233,9 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   let pagina = 1
   const idsVistos = new Set<string>()
 
-  while (true) {
+  const MAX_PAGINAS = 100
+
+  while (pagina <= MAX_PAGINAS) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
     let html = ''
