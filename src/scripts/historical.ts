@@ -235,11 +235,21 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
     const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
-    let html: string
-    try {
-      html = await fetchConReintentos(url)
-    } catch (err: any) {
-      process.stdout.write(`\n    ⚠ página ${pagina} falló (${err.message?.slice(0, 50)}), saltando`)
+    let html = ''
+    let paginaOk = false
+    for (let intento = 0; intento < 5; intento++) {
+      try {
+        html = await fetchConReintentos(url)
+        paginaOk = true
+        break
+      } catch (err: any) {
+        const espera = 10000 * Math.pow(2, intento)
+        process.stdout.write(`\n    ⚠ página ${pagina} intento ${intento + 1}/5 falló, esperando ${espera/1000}s...`)
+        await sleep(espera)
+      }
+    }
+    if (!paginaOk) {
+      process.stdout.write(`\n    ✗ página ${pagina} falló 5 veces, pasando al siguiente mes`)
       break
     }
     const $ = cheerio.load(html)
