@@ -3,6 +3,9 @@
   "compilerOptions": {
     "module": "commonjs",
     "moduleResolution": "node",
+    "target": "ES2019",
+    "lib": ["ES2019"],
+    "downlevelIteration": true,
     "noEmit": false,
     "outDir": "dist-scripts",
     "paths": {
