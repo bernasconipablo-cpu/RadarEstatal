@@ -5,3 +5,4 @@ node_modules/
 *.json.bak
 dist-scripts/
 licitaciones-exploración.json
+*.tsbuildinfo
