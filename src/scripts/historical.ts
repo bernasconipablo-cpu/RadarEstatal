@@ -231,6 +231,7 @@ async function scrapearDetalle(idArce: string): Promise<{ lic: Partial<Licitacio
 async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: string): Promise<number> {
   let totalGuardadas = 0
   let pagina = 1
+  const idsVistos = new Set<string>()
 
   while (true) {
     const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
@@ -255,6 +256,19 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
     const $ = cheerio.load(html)
     const items = $('.row.item')
     if (items.length === 0) break
+
+    // Detectar si el portal repite la última página (loop infinito)
+    const idsEstaPagina: string[] = []
+    items.toArray().forEach(el => {
+      const href = $(el).find('a[href*="/consultas/detalle/id/"]').first().attr('href') || ''
+      const m = href.match(/\/id\/([i\d]\d*)/)
+      if (m) idsEstaPagina.push(m[1])
+    })
+    if (idsEstaPagina.length > 0 && idsEstaPagina.every(id => idsVistos.has(id))) {
+      process.stdout.write(`\n    ⏹ página ${pagina} repite IDs anteriores — fin del mes`)
+      break
+    }
+    idsEstaPagina.forEach(id => idsVistos.add(id))
 
     for (const el of items.toArray()) {
       const $el = $(el)
