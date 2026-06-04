@@ -336,7 +336,14 @@ async function scrapearMes(
       let articulos: Articulo[] = []
       try {
         await sleep(PAUSA_MS)
-        const { lic: detalle, articulos: arts } = await scrapearDetalle(idArce)
+        // 90s hard timeout per record — prevents process hanging forever
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timeout 90s')), 90000)
+        )
+        const { lic: detalle, articulos: arts } = await Promise.race([
+          scrapearDetalle(idArce),
+          timeoutPromise,
+        ])
         licFinal = { ...licBase, ...detalle }
         articulos = arts
       } catch (err: any) {
@@ -430,5 +437,14 @@ async function main() {
   console.log(`║  TOTAL: ${totalGeneral} licitaciones guardadas`.padEnd(51) + '║')
   console.log(`╚══════════════════════════════════════════════════╝\n`)
 }
+
+process.on('uncaughtException', err => {
+  console.error('\n[uncaughtException]', err.message)
+  // Don't exit — let the scraper continue
+})
+
+process.on('unhandledRejection', (reason: any) => {
+  console.error('\n[unhandledRejection]', reason?.message || reason)
+})
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1) })
