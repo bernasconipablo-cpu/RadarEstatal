@@ -103,6 +103,20 @@ async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
 }
 
 
+interface Progress {
+  ultimaPagina: number
+  totalGuardadas: number
+}
+
+function loadProgress(): Progress {
+  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')) }
+  catch { return { ultimaPagina: 0, totalGuardadas: 0 } }
+}
+
+function saveProgress(p: Progress) {
+  fs.writeFileSync(PROGRESS_FILE, JSON.stringify(p, null, 2))
+}
+
 async function main() {
   // Load ALL existing IDs once to avoid per-record DB queries
   process.stdout.write('Cargando IDs existentes...')
