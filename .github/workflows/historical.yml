@@ -2,11 +2,6 @@ name: Carga Histórica
 
 on:
   workflow_dispatch:
-    inputs:
-      meses:
-        description: 'Cuántos meses hacia atrás (default: 24)'
-        required: false
-        default: '24'
 
 jobs:
   historical:
@@ -18,10 +13,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '22'
 
-      - run: npm ci
+      - run: npm install
 
       - name: Crear .env.local
         run: |
@@ -39,8 +33,6 @@ jobs:
 
       - name: Correr scraper histórico
         run: npm run historical
-        env:
-          MESES: ${{ inputs.meses }}
 
       - name: Guardar progreso
         if: always()
