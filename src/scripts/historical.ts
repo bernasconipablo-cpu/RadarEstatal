@@ -175,6 +175,11 @@ async function main() {
 
     const $ = cheerio.load(html)
     const items = $('.row.item')
+    if (pagina <= 2) {
+      // Diagnostic: log page title and item count to verify selectors
+      const title = $('title').text().trim()
+      console.log(`\n[diag] pág ${pagina}: title="${title}" items=${items.length} html_len=${html.length}`)
+    }
     if (items.length === 0) {
       console.log(`\n✅ Sin más resultados en pág ${pagina} — completado`)
       break
@@ -244,10 +249,11 @@ async function main() {
       process.stdout.write('+')
     }
 
-    // Stop if no "Siguiente" link
-    const hasNext = $('#pagination a').toArray().some(a => $(a).text().trim().includes('Siguiente'))
+    // Stop if no "Siguiente" link — search broadly across any pagination container
+    const allLinks = $('a').toArray()
+    const hasNext = allLinks.some(a => $(a).text().trim().toLowerCase().includes('siguiente'))
     if (!hasNext) {
-      console.log(`\n⏹ pág ${pagina} última`)
+      console.log(`\n⏹ pág ${pagina} última (no hay link Siguiente)`)
       saveProgress({ ultimaPagina: pagina, totalGuardadas: totalGeneral })
       break
     }
