@@ -17,7 +17,6 @@ require('dotenv').config({ path: path.join(__dirname, '../../.env.local') })
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const BASE_URL = 'https://www.comprasestatales.gub.uy'
-const PAUSA_MS = 1200
 const PROGRESS_FILE = path.join(__dirname, '../../.historical-progress.json')
 
 const db = createClient(SUPABASE_URL, SUPABASE_KEY)
@@ -26,7 +25,7 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false })
 
 const http = axios.create({
   baseURL: BASE_URL,
-  timeout: 40000,
+  timeout: 45000,
   httpsAgent,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -37,15 +36,6 @@ const http = axios.create({
     'Upgrade-Insecure-Requests': '1',
   },
 })
-
-interface Articulo {
-  licitacion_id: string
-  numero: string
-  descripcion: string
-  cantidad: number | null
-  unidad: string | null
-  monto: number | null
-}
 
 interface Licitacion {
   id: string
@@ -87,12 +77,12 @@ function parseMonto(texto: string | null | undefined): { monto: number | null; m
   return { monto: m ? parseFloat(m[0]) : null, moneda }
 }
 
-function mapEstado(texto: string, tipoBusqueda: string): string {
+function mapEstado(texto: string): string {
   const t = texto.toLowerCase()
   if (t.includes('adj')) return 'adjudicada'
   if (t.includes('des') || t.includes('desierta')) return 'desierta'
   if (t.includes('sus')) return 'suspendida'
-  if (t.includes('vig') || t.includes('publicada') || t.includes('abierta') || tipoBusqueda === 'VIG') return 'publicada'
+  if (t.includes('vig') || t.includes('publicada') || t.includes('abierta')) return 'publicada'
   return 'otro'
 }
 
@@ -116,7 +106,7 @@ async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
     } catch (err: any) {
       if (i < intentos - 1) {
         const espera = 2000 * Math.pow(2, i)
-        process.stdout.write(` [reintento ${i + 1} en ${espera / 1000}s]`)
+        process.stdout.write(` [retry ${i + 1} in ${espera / 1000}s]`)
         await sleep(espera)
       } else {
         throw err
@@ -126,116 +116,25 @@ async function fetchConReintentos(url: string, intentos = 3): Promise<string> {
   throw new Error('Sin respuesta')
 }
 
-async function scrapearArticulosPagina(idArce: string, pagina: number): Promise<Articulo[]> {
-  const html = await fetchConReintentos(`/consultas/detalle/id/${idArce}/pagina/${pagina}`)
-  const $ = cheerio.load(html)
-  const articulos: Articulo[] = []
-
-  $('.desc-item').each((_, el) => {
-    const $el = $(el)
-    const h3Text = $el.find('h3').first().text()
-    const matchNum = h3Text.match(/[IÍ]tem\s*N[oº°]\s*(\d+)/i)
-    const numero = matchNum ? matchNum[1] : ''
-    const descripcion = h3Text
-      .replace(/[IÍ]tem\s*N[oº°]\s*\d+/i, '')
-      .replace(/\(Cód\.?\s*Artículo\s*[\d.]+\)/i, '')
-      .replace(/\s+/g, ' ').trim()
-    if (!descripcion) return
-
-    let cantidad: number | null = null
-    let unidad: string | null = null
-    let monto: number | null = null
-
-    const liItems = $el.find('ul.list-inline li')
-    liItems.each((i, li) => {
-      const txt = $(li).text().trim()
-      if (txt === 'Cantidad:') {
-        const val = $(liItems[i + 1]).find('strong').text().trim()
-        const mc = val.match(/([\d,.]+)\s*(.+)?/)
-        if (mc) {
-          cantidad = parseFloat(mc[1].replace(',', '.'))
-          unidad = mc[2]?.trim() || null
-        }
-      }
-      if (txt === 'Monto total con impuestos:') {
-        monto = parseMonto($(liItems[i + 1]).find('strong').text().trim()).monto
-      }
-    })
-
-    articulos.push({ licitacion_id: `arce-${idArce}`, numero, descripcion, cantidad, unidad, monto })
-  })
-
-  return articulos
-}
-
-async function scrapearDetalle(idArce: string): Promise<{ lic: Partial<Licitacion>; articulos: Articulo[] }> {
-  const html = await fetchConReintentos(`/consultas/detalle/id/${idArce}`)
-  const $ = cheerio.load(html)
-  const lic: Partial<Licitacion> = {}
-
-  const h2Text = $('h2').first().clone().find('span').remove().end().text().trim()
-  const mTipo = h2Text.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
-  if (mTipo) {
-    lic.tipo_procedimiento = mTipo[1].trim()
-    lic.numero_compra = mTipo[2].trim()
-  } else {
-    lic.tipo_procedimiento = h2Text
-    lic.numero_compra = ''
-  }
-
-  lic.organismo = $('h2 span.small').first().text().trim()
-  lic.objeto = $('p.buy-object').first().text().trim()
-
-  $('ul.buy-detail-list').each((_, ul) => {
-    const lis = $(ul).find('li')
-    const label = $(lis[0]).text().trim().toLowerCase()
-    const valor = $(lis[1]).find('strong').text().trim() || $(lis[1]).text().trim()
-    if (label.includes('fecha publicaci')) lic.fecha_publicacion = parseFecha(valor) ?? undefined
-    if (label.includes('fecha de compra')) lic.fecha_adjudicacion = parseFecha(valor)
-    if (label.includes('apertura')) lic.fecha_apertura = parseFecha(valor)
-    if (label.includes('monto total') || label.includes('monto adjudicado')) {
-      const { monto, moneda } = parseMonto(valor)
-      lic.monto_adjudicado = monto
-      if (moneda) lic.moneda = moneda
-    }
-    if (label.includes('monto estimado')) {
-      const { monto, moneda } = parseMonto(valor)
-      lic.monto_estimado = monto
-      if (!lic.moneda && moneda) lic.moneda = moneda
-    }
-  })
-
-  $('table').filter((_, el) =>
-    $(el).find('th').toArray().some(th => $(th).text().toLowerCase().includes('nombre proveedor'))
-  ).first().find('tbody tr').each((_, row) => {
-    const nombre = $(row).find('td').eq(2).text().trim()
-    if (nombre) lic.empresa_adjudicada = nombre
-  })
-
-  const articulosPag1 = await scrapearArticulosPagina(idArce, 1)
-  const paginacionText = $('#pagination').text().replace(/\s+/g, ' ').trim()
-  const nums = [...paginacionText.matchAll(/\b(\d+)\b/g)].map(m => parseInt(m[1])).filter(n => n > 0)
-  const ultimaPag = nums.length > 0 ? Math.max(...nums) : 1
-
-  let todosArticulos = articulosPag1
-  for (let pag = 2; pag <= ultimaPag; pag++) {
-    await sleep(PAUSA_MS)
-    const mas = await scrapearArticulosPagina(idArce, pag)
-    todosArticulos = todosArticulos.concat(mas)
-  }
-
-  return { lic, articulos: todosArticulos }
-}
-
-async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: string): Promise<number> {
+async function scrapearMes(
+  fechaDesde: string,
+  fechaHasta: string,
+  idsEnDB: Set<string>
+): Promise<number> {
   let totalGuardadas = 0
   let pagina = 1
   const idsVistos = new Set<string>()
-  const MAX_PAGINAS = 100
+
+  // Portal has 10 items/page; 2000 pages = 20k records max per month
+  const MAX_PAGINAS = 2000
+
+  // Page 1: /buscar/ endpoint. Pages 2+: /index/.../page/N
+  const FILTER = `tipo-pub/ALL/tipo-fecha/ROF/rango-fecha/${fechaDesde}_${fechaHasta}/filtro-cat/CAT`
 
   while (pagina <= MAX_PAGINAS) {
-    const rango = `${fechaDesde}+00:00:00_${fechaHasta}+23:59:59`
-    const url = `/consultas/buscar/tipo-pub/${tipo}/tipo-fecha/ROF/rango-fecha/${rango}/tipo-orden/DESC/orden/ORD_ROF/pagina/${pagina}`
+    const url = pagina === 1
+      ? `/consultas/buscar/${FILTER}/pagina/1`
+      : `/consultas/index/${FILTER}/pagina/1/page/${pagina}`
 
     let html = ''
     let paginaOk = false
@@ -246,12 +145,12 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         break
       } catch (err: any) {
         const espera = 10000 * Math.pow(2, intento)
-        process.stdout.write(`\n    ⚠ página ${pagina} intento ${intento + 1}/5 falló, esperando ${espera/1000}s...`)
+        process.stdout.write(`\n    ⚠ pág ${pagina} intento ${intento + 1}/5 falló, esperando ${espera / 1000}s...`)
         await sleep(espera)
       }
     }
     if (!paginaOk) {
-      process.stdout.write(`\n    ✗ página ${pagina} falló 5 veces, pasando al siguiente mes`)
+      process.stdout.write(`\n    ✗ pág ${pagina} falló 5 veces, abortando bloque`)
       break
     }
 
@@ -259,29 +158,34 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
     const items = $('.row.item')
     if (items.length === 0) break
 
+    // Detect portal repeating last page
     const idsEstaPagina: string[] = []
     items.toArray().forEach(el => {
-      const href = $(el).find('a[href*="/consultas/detalle/id/"]').first().attr('href') || ''
-      const m = href.match(/\/id\/([i\d]\d*)/)
+      const href = $(el).find('a[href*="/id/"]').first().attr('href') || ''
+      const m = href.match(/\/id\/([\w\d]+)/)
       if (m) idsEstaPagina.push(m[1])
     })
     if (idsEstaPagina.length > 0 && idsEstaPagina.every(id => idsVistos.has(id))) {
-      process.stdout.write(`\n    ⏹ página ${pagina} repite IDs anteriores — fin del mes`)
+      process.stdout.write(`\n    ⏹ pág ${pagina} repite IDs — fin`)
       break
     }
     idsEstaPagina.forEach(id => idsVistos.add(id))
 
+    const nuevosEnPagina = idsEstaPagina.filter(id => !idsEnDB.has(`arce-${id}`)).length
+    process.stdout.write(`\n  pág ${pagina} [skip:${idsEstaPagina.length - nuevosEnPagina} new:${nuevosEnPagina}]`)
+
     for (const el of items.toArray()) {
       const $el = $(el)
-      const link = $el.find('a[href*="/consultas/detalle/id/"]').first()
+      const link = $el.find('a[href*="/id/"]').first()
       const href = link.attr('href') || ''
-      const matchId = href.match(/\/id\/([i\d]\d*)/)
+      const matchId = href.match(/\/id\/([\w\d]+)/)
       if (!matchId) continue
       const idArce = matchId[1]
       const licitacionId = `arce-${idArce}`
 
-      const { data: existe } = await db.from('licitaciones').select('id').eq('id', licitacionId).maybeSingle()
-      if (existe) { process.stdout.write('.'); continue }
+      if (idsEnDB.has(licitacionId)) { process.stdout.write('.'); continue }
+
+      await sleep(300)
 
       const tituloTexto = link.clone().find('.sr-only').remove().end().text().trim()
       const mTipo = tituloTexto.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
@@ -291,7 +195,7 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
       const estadoTexto = $el.find('.desc-sniped .col-md-3.text-right').text().trim()
       const { monto: montoAdj, moneda } = parseMonto(montoTexto)
 
-      const licBase: Licitacion = {
+      const lic: Licitacion = {
         id: licitacionId,
         numero_compra: mTipo ? mTipo[2].trim() : '',
         tipo_procedimiento: mTipo ? mTipo[1].trim() : tituloTexto,
@@ -304,42 +208,48 @@ async function scrapearMes(tipo: 'VIG' | 'ADJ', fechaDesde: string, fechaHasta: 
         fecha_adjudicacion: parseFecha(fechaCompraTexto),
         monto_estimado: null,
         moneda,
-        estado: mapEstado(estadoTexto || tipo, tipo),
+        estado: mapEstado(estadoTexto),
         empresa_adjudicada: null,
         monto_adjudicado: montoAdj,
         url_compra: `${BASE_URL}/consultas/detalle/id/${idArce}`,
       }
 
-      let licFinal = licBase
-      let articulos: Articulo[] = []
-      try {
-        await sleep(PAUSA_MS)
-        const { lic: detalle, articulos: arts } = await scrapearDetalle(idArce)
-        licFinal = { ...licBase, ...detalle }
-        articulos = arts
-      } catch (err: any) {
-        process.stdout.write(`\n    ⚠ detalle fallido ${licitacionId} (guardando datos básicos): ${err.message?.slice(0, 60)}`)
-      }
+      const { error } = await db.from('licitaciones').upsert(lic, { onConflict: 'id' })
+      if (error) { process.stdout.write(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
 
-      const { error } = await db.from('licitaciones').upsert(licFinal, { onConflict: 'id' })
-      if (error) { console.error(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
-      if (articulos.length > 0) {
-        await db.from('licitacion_articulos').delete().eq('licitacion_id', licitacionId)
-        await db.from('licitacion_articulos').insert(articulos)
-      }
+      idsEnDB.add(licitacionId)
       totalGuardadas++
-      process.stdout.write(`\n    ✓ ${licitacionId} | ${(licFinal.objeto || '').slice(0, 45)} | ${articulos.length} items`)
+      process.stdout.write('+')
     }
 
-    if (items.length < 10) break
+    // Stop if no "Siguiente" link — last page
+    const hasNext = $('#pagination a').toArray().some(a => $(a).text().trim().includes('Siguiente'))
+    if (!hasNext) {
+      process.stdout.write(`\n    ⏹ pág ${pagina} última`)
+      break
+    }
+
     pagina++
-    await sleep(PAUSA_MS)
+    await sleep(500)
   }
 
   return totalGuardadas
 }
 
 async function main() {
+  // Load ALL existing IDs once to avoid per-record DB queries
+  process.stdout.write('Cargando IDs existentes...')
+  const idsEnDB = new Set<string>()
+  let offset = 0
+  while (true) {
+    const { data } = await db.from('licitaciones').select('id').range(offset, offset + 999)
+    if (!data || data.length === 0) break
+    data.forEach((r: any) => idsEnDB.add(r.id))
+    if (data.length < 1000) break
+    offset += 1000
+  }
+  console.log(` ${idsEnDB.size} ya en DB`)
+
   const progress = loadProgress()
 
   const meses: Array<{ desde: string; hasta: string }> = []
@@ -354,32 +264,30 @@ async function main() {
   console.log('\n╔══════════════════════════════════════════════════╗')
   console.log('║      Radar Estatal — Carga Histórica 24 meses    ║')
   console.log('╚══════════════════════════════════════════════════╝')
-  console.log(`Progreso: ${PROGRESS_FILE}`)
-  console.log(`Bloques: ${meses.length * 2} (24 meses × VIG + ADJ)\n`)
+  console.log(`Bloques: ${meses.length} meses | DB actual: ${idsEnDB.size}\n`)
 
   let totalGeneral = 0
 
   for (const { desde, hasta } of meses) {
-    for (const tipo of ['VIG', 'ADJ'] as const) {
-      const clave = `${tipo}-${desde.slice(0, 7)}`
-      if (progress.completados.includes(clave)) {
-        console.log(`  ⏭  ${clave} — ya procesado`)
-        continue
-      }
-      console.log(`\n▶ ${clave} (${desde} → ${hasta})`)
-      const inicio = Date.now()
-      try {
-        const guardadas = await scrapearMes(tipo, desde, hasta)
-        console.log(`\n  ✅ ${guardadas} nuevas en ${Math.round((Date.now()-inicio)/1000)}s`)
-        totalGeneral += guardadas
-        progress.completados.push(clave)
-        saveProgress(progress)
-      } catch (err: any) {
-        console.error(`\n  ❌ Error: ${err.message}`)
-        progress.ultimo_error = `${clave}: ${err.message}`
-        saveProgress(progress)
-        await sleep(10000)
-      }
+    const clave = desde.slice(0, 7)
+    if (progress.completados.includes(clave)) {
+      console.log(`  ⏭  ${clave} — ya procesado`)
+      continue
+    }
+    console.log(`\n▶ ${clave} (${desde} → ${hasta})`)
+    const inicio = Date.now()
+    try {
+      const guardadas = await scrapearMes(desde, hasta, idsEnDB)
+      const seg = Math.round((Date.now() - inicio) / 1000)
+      console.log(`\n  ✅ ${guardadas} nuevas en ${seg}s (DB total: ${idsEnDB.size})`)
+      totalGeneral += guardadas
+      progress.completados.push(clave)
+      saveProgress(progress)
+    } catch (err: any) {
+      console.error(`\n  ❌ Error: ${err.message}`)
+      progress.ultimo_error = `${clave}: ${err.message}`
+      saveProgress(progress)
+      await sleep(10000)
     }
   }
 
@@ -387,5 +295,8 @@ async function main() {
   console.log(`║  TOTAL: ${totalGeneral} licitaciones guardadas`.padEnd(51) + '║')
   console.log(`╚══════════════════════════════════════════════════╝\n`)
 }
+
+process.on('uncaughtException', err => console.error('\n[uncaughtException]', err.message))
+process.on('unhandledRejection', (r: any) => console.error('\n[unhandledRejection]', r?.message || r))
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1) })
