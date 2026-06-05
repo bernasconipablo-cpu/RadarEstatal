@@ -304,6 +304,7 @@ async function scrapearMes(
 
       // Skip records already in DB (fast Set lookup, no DB query)
       if (idsEnDB.has(licitacionId)) { process.stdout.write('.'); continue }
+      await sleep(300)
 
       const tituloTexto = link.clone().find('.sr-only').remove().end().text().trim()
       const mTipo = tituloTexto.match(/^(.+?)\s+(\d+\/\d+)\s*$/)
@@ -333,35 +334,16 @@ async function scrapearMes(
       }
 
       let licFinal = licBase
-      let articulos: Articulo[] = []
-      try {
-        await sleep(PAUSA_MS)
-        // 90s hard timeout per record — prevents process hanging forever
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout 90s')), 90000)
-        )
-        const { lic: detalle, articulos: arts } = await Promise.race([
-          scrapearDetalle(idArce),
-          timeoutPromise,
-        ])
-        licFinal = { ...licBase, ...detalle }
-        articulos = arts
-      } catch (err: any) {
-        process.stdout.write(`\n    ⚠ detalle fallido ${licitacionId}: ${err.message?.slice(0, 60)}`)
-      }
+      // Historical load: save listing data only (no detail fetch)
+      // This is 3x faster and avoids timeouts on individual records
 
       const { error } = await db.from('licitaciones').upsert(licFinal, { onConflict: 'id' })
       if (error) { process.stdout.write(`\n    ✗ ${licitacionId}: ${error.message}`); continue }
 
-      if (articulos.length > 0) {
-        await db.from('licitacion_articulos').delete().eq('licitacion_id', licitacionId)
-        await db.from('licitacion_articulos').insert(articulos)
-      }
-
       // Add to in-memory Set so subsequent pages don't re-fetch this record
       idsEnDB.add(licitacionId)
       totalGuardadas++
-      process.stdout.write(`\n    ✓ ${licitacionId} | ${(licFinal.objeto || '').slice(0, 45)} | ${articulos.length} items`)
+      process.stdout.write('+')
     }
 
     if (isLastPage) {
